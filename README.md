@@ -1,33 +1,19 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
-
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
-  
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
 ## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+本项目主要用于外部取数。
+主要功能：
+- 定时：定时调用外部接口
+- 容错：调用外部接口时异常时，框架会稍后重试
+- 性能：易于横向拓展服务
 
 ## Installation
+本项目基于 Nest 框架开发，仅依赖于 RabbitMQ 组件
 
+安装 RabbitMQ
+```bash
+$ docker-compose up -d
+```
+
+安装项目依赖
 ```bash
 $ npm install
 ```
@@ -45,29 +31,44 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
-## Test
+## Quickly Start
+项目提供了一个 Demo：src/adapter/demo.adapter.ts
 
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+1. 定义任务队列名称
+```typescript
+queueName = 'demo_queue'
+```
+2. 开发任务提交逻辑
+```typescript
+@Cron('0 * * * * *')
+async initTasks(args: {}): Promise<void> {
+    const tasks = []
+    for (let i = 0; i < 30; i++) {
+    const message = {
+        'data': i
+    }
+    tasks.push(this.sendToMq(this.queueName, message))
+}
+await Promise.all(tasks)
+console.log('send message success')
+}
+```
+3. 开发外部取数逻辑
+```typescript
+async requestAPI(msg: {}): Promise<any> {
+    const url = 'https://www.baidu.com/'
+    const result = await request.get(url).timeout(5000)
+    await Bluebird.delay(1000)
+    if (Math.floor(Math.random() * 10) <= 2) {
+        throw new Error('mock exception')
+    }
+    return result.body
+}
 ```
 
-## Support
+举个实例：我需要知道每天的菜市场价格。
+1. 设置队列名为：菜市场价格队列
+2. 开发任务提交逻辑：我想知道猪肉、牛肉、羊肉、白菜、胡萝卜、洋葱的价格，我就分别把商品信息发送到MQ中
+3. 开发外部取数逻辑：我从MQ中获取到信息，是猪肉。那我就去调用外部商品价格的API，传入猪肉，得到今天猪肉的价格，然后存入数据库中
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-  Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+以上便是一个简单的实例
