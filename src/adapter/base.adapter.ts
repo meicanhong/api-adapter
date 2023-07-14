@@ -1,4 +1,4 @@
-import {Inject, Injectable} from "@nestjs/common";
+import {Inject, Injectable, Logger} from "@nestjs/common";
 import * as Bluebird from 'bluebird'
 import * as schedule from 'node-schedule';
 import {AmqpConnection} from "@golevelup/nestjs-rabbitmq";
@@ -6,13 +6,22 @@ import {AmqpConnection} from "@golevelup/nestjs-rabbitmq";
 
 @Injectable()
 export abstract class BaseAdapter {
-  private prefix = `api_adapter.`
-  private channelAlive = true
-  public abstract queueName
-  public preFetch = 2
-  public nack = true
+  // 队列名称
+  protected abstract queueName
+  // 日志
+  protected abstract logger: Logger
+  // 消费并发数
+  protected concurrentCount = 1
+  // 消费异常时重试次数
+  protected retryMax = 10
+  // delayOnError: 消费异常时等待时间，单位毫秒
   public delayOnError = 1000
-  private isConnection = true
+  // 消费超出重试次数后，是否重新发送到队列, 等待再次消费
+  protected resend = false
+
+  // 判断 channel 是否存活
+  private channelAlive = true
+
   constructor(private readonly amqpConnection: AmqpConnection) {}
 
   /**
@@ -21,65 +30,45 @@ export abstract class BaseAdapter {
   async onModuleInit() {
     const that = this
     await this.consume({
-      queueName: this.queueName,
-      preFetch: this.preFetch || 1, // 同时消费的条数
       handle: async function (msg: {}) {
         await that.handle(msg)
       },
-      options: { nack: this.nack, delayOnError: this.delayOnError}
     })
     await this.reconnection()
-    console.log(this.queueName, 'onModuleInit success')
   }
 
-  async sendToMq(queue: string, data: Record<string, any>): Promise<boolean> {
-    let res = false
+  async sendToMq(queue: string, data: Record<string, any>) {
     try {
-      // 发送消息共用一个 default channel
-      const ch = this.amqpConnection.channel
-      await ch.assertQueue(this.prefix + queue)
-      res = ch.sendToQueue(this.prefix + queue, Buffer.from(JSON.stringify(data)))
-      return res
+      const channel = this.amqpConnection.channel
+      await channel.assertQueue(queue)
+      await channel.sendToQueue(queue, Buffer.from(JSON.stringify(data)))
     } catch (e) {
-      console.error('send to mq error ', e)
-      return false
+      this.logger.error(this.queueName + ' send message to mq error ' + e.message )
     }
   }
 
   async consume({
-    queueName,
-    preFetch,
     handle,
-    options
   }: {
-    queueName: string
-    preFetch: number
     handle: (param: any) => any
-    options?: { nack: boolean; delayOnError?: number }
   }) {
-    const queue = `${this.prefix}${queueName}`
     const mq = this.amqpConnection
     const channel = await mq.connection.createChannel()
-    await channel.assertQueue(queue)
-    await channel.prefetch(preFetch || this.preFetch)
-    await this.registerChannelEvent(queue, channel)
+    await channel.assertQueue(this.queueName)
+    await channel.prefetch(this.concurrentCount)
+    await this.registerChannelEvent(this.queueName, channel)
     this.channelAlive = true
 
     try {
-      await channel.consume(queue, async (msg: any) => {
+      await channel.consume(this.queueName, async (msg: any) => {
         try {
           const json = JSON.parse(msg!.content.toString())
           await handle(json)
           await channel.ack(msg)
         } catch (e) {
-          console.error(`mq consume queue:${queue} error: ${e}`, e.message)
+          this.logger.error(this.queueName + ' consume message error ' + e.message, e.stack)
           try {
-            if (options && options.nack) {
-              await Bluebird.delay(options.delayOnError || 3000)
-              await channel.nack(msg)
-            } else {
-              await channel.ack(msg)
-            }
+
           } catch (e) {
             this.channelAlive = false
             console.error(`mq consume exception error:${queue} error: ${e}`, e)
@@ -91,6 +80,10 @@ export abstract class BaseAdapter {
       console.error(`mq consume channel:${queue} error: ${e}`, e)
     }
   }
+
+  private async handleRetryOnException() {
+
+      }
 
   private async registerChannelEvent(queueName: any, channel: any) {
     const that = this
