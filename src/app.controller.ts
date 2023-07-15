@@ -7,7 +7,8 @@ export class AppController {
 
   @Get('/hello')
   getHello(): string {
-    return 'hello world'
+    const now = new Date(Date.now()).toISOString()
+    return `Hello World! ${now}`
   }
 
 }

@@ -1,6 +1,5 @@
 import {Inject, Injectable, Logger} from "@nestjs/common";
 import * as Bluebird from 'bluebird'
-import * as schedule from 'node-schedule';
 import {AmqpConnection, RabbitMQModule} from "@golevelup/nestjs-rabbitmq";
 
 
@@ -13,12 +12,12 @@ export abstract class BaseAdapter {
   // 消费并发数
   protected concurrentCount = 1
   // 消费异常时重试次数
-  protected retryMax = 1
+  protected retryMax = 3
   // delayOnError: 消费异常时等待时间，单位毫秒
   public delayOnError = 1000
   // 消费超出重试次数后，是否重新发送到队列, 等待再次消费
   protected resend = false
-
+  // mq channel
   private channel
   // 判断 channel 是否存活
   private channelAlive = true
@@ -50,6 +49,20 @@ export abstract class BaseAdapter {
    */
   async onModuleInit() {
     const that = this
+    await this.channelConnect()
+    await this.consume({
+      handle: async function (msg: {}) {
+        await that.handle(msg)
+      },
+    })
+    this.logger.debug(`${this.queueName} consumer init success, channel alive: ${this.channelAlive}`)
+  }
+
+  /**
+   * 连接 channel
+   */
+  async channelConnect() {
+    this.logger.debug( `${this.queueName} channel disconnect, reconnecting...`)
     const channel = await this.connection.connection.createChannel()
     await channel.assertQueue(this.queueName)
     await channel.prefetch(this.concurrentCount)
@@ -57,14 +70,23 @@ export abstract class BaseAdapter {
 
     this.channel = channel
     this.channelAlive = true
+  }
 
-    await this.consume({
-      handle: async function (msg: {}) {
-        await that.handle(msg)
-      },
+  /**
+   * 注册 channel 事件
+   * @param channel
+   * @private
+   */
+  private async registerChannelEvent(channel: any) {
+    const that = this
+    channel.once('error', function () {
+      that.logger.error(`${that.queueName} channel error`)
+      that.channelAlive = false
     })
-    await this.reconnection()
-    this.logger.debug(`${this.queueName} consumer init success, channel alive: ${this.channelAlive}`)
+    channel.once('close', function () {
+      that.logger.error(`${that.queueName} channel close`)
+      that.channelAlive = false
+    })
   }
 
   /**
@@ -74,7 +96,7 @@ export abstract class BaseAdapter {
    */
   async sendToMq(data: Record<string, any>) {
     try {
-      const channel = await this.connection.connection.createChannel()
+      const channel = this.channel
       await channel.sendToQueue(this.queueName, Buffer.from(JSON.stringify(data)))
     } catch (e) {
       this.logger.error(`${this.queueName} send message to mq error ${e.message}`, e.stack)
@@ -90,17 +112,18 @@ export abstract class BaseAdapter {
   }: {
     handle: (param: any) => any
   }) {
-
     try {
       await this.channel.consume(this.queueName, async (msg: any) => {
         let retryCount = 0
         while (retryCount < this.retryMax) {
           try {
+            retryCount = retryCount + 1
             const json = JSON.parse(msg!.content.toString())
             await handle(json)
             await this.channel.ack(msg)
+            break
           } catch (e) {
-            retryCount = await this.handleConsumerError(msg, retryCount, this.channel, e)
+            await this.handleConsumerError(msg, retryCount, this.channel, e)
           }
         }
       })
@@ -121,7 +144,12 @@ export abstract class BaseAdapter {
   private async handleConsumerError(msg: any, retryCount: number, channel: any, e: any) {
     try {
       await Bluebird.delay(this.delayOnError)
-      this.logger.error(`[${retryCount}/${this.retryMax}]  ${this.queueName} consume message error: ${e.message}, ${this.channelAlive}`)
+      this.logger.error(`[${retryCount}/${this.retryMax}]  ${this.queueName} consume message error: ${e.message}`)
+
+      // 判断 channel 是否存活
+      if (!this.channelAlive) {
+        await this.channelConnect()
+      }
 
       // 重试次数超过最大值
       if (retryCount >= this.retryMax) {
@@ -130,45 +158,14 @@ export abstract class BaseAdapter {
         }
         await channel.ack(msg)
       }
-
-      retryCount = retryCount + 1
-      return retryCount
     } catch (e) {
       this.channelAlive = false
       this.logger.error( `${this.queueName} handleConsumerError error: ${e.message}`)
     }
   }
 
-  /**
-   * 注册 channel 事件
-   * @param channel
-   * @private
-   */
-  private async registerChannelEvent(channel: any) {
-    const that = this
-    // channel.once('error', function () {
-    //   that.logger.error(`${that.queueName} channel error`)
-    //   that.channelAlive = false
-    // })
-    // channel.once('close', function () {
-    //   that.logger.error(`${that.queueName} channel close`)
-    //   that.channelAlive = false
-    // })
-  }
-
   protected async handle(msg: {}): Promise<void> {
     await this.runOneTask(msg)
-  }
-
-  /**
-   * 定时重连MQ队列
-   * 因为程序运行时因为各种因素失去了MQ的连接，重连后他是不会主动去拉取队列中的信息进行消费的，所以需要进行此操作
-   */
-  async reconnection() {
-    // if (!this.channelAlive) {
-    //   this.logger.error( `${this.queueName} channel close, reconnecting`)
-    //   await this.onModuleInit()
-    // }
   }
 
 }
