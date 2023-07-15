@@ -3,38 +3,39 @@ import { Cron } from '@nestjs/schedule'
 import * as lodash from 'lodash'
 import * as request from 'superagent'
 import * as Bluebird from 'bluebird'
+import {Logger} from "@nestjs/common";
+
 
 export class DemoAdapter extends BaseAdapter {
     queueName = 'demo_queue'
+    logger = new Logger('demo')
 
-    // run every minute
-    @Cron('0 * * * * *')
-    async initTasks(args: {}): Promise<void> {
-        const tasks = []
-        for (let i = 0; i < 30; i++) {
-            const message = {
-                'data': i
-            }
-            tasks.push(this.sendToMq(this.queueName, message))
-        }
-        await Promise.all(tasks)
-        console.log('send message success')
+    async onModuleInit(): Promise<void> {
+        super.onModuleInit();
+        await this.initTasks({})
     }
 
-    async requestAPI(msg: {}): Promise<any> {
-        const url = 'https://www.baidu.com/'
-        const result = await request.get(url).timeout(5000)
-        await Bluebird.delay(1000)
-        if (Math.floor(Math.random() * 10) <= 2) {
-            throw new Error('mock exception')
-        }
-        return result.body
+    @Cron('*/5 * * * * *')
+    async initTasks(args: {}): Promise<void> {
+        const datas = lodash.range(100).map(() => Date.now())
+        await Bluebird.map(datas, async (data) => {
+            await this.sendToMq({data})
+        }, {concurrency: 1})
     }
 
     async runOneTask(msg: {}): Promise<void> {
         const data = lodash.get(msg, 'data')
         const result = await this.requestAPI(data)
-        console.log('execute message success', data, result)
+        this.logger.debug(`${data} result: ${result}`)
+    }
+
+    async requestAPI(msg: {}): Promise<any> {
+        // 随机抛异常
+        if (lodash.random(0, 10) > 8) {
+            throw new Error('request api error')
+        }
+        // const result = await request.get('http://localhost:3000/hello')
+        return 'hello'
     }
 
 }
